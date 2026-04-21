@@ -1,0 +1,8 @@
+# Ignore all files in workspace root
+/*
+
+# Exception patterns
+!.gitignore
+
+# But only include skills directory
+!skills/
