@@ -77,35 +77,82 @@ Expected output:
 
 The config files are at `<deploy_path>/hermes/data/config.yaml` and `<deploy_path>/hermes/data/.env`.
 
-**Option A: OpenAI-compatible endpoint (e.g. MiniMax)**
+**MiniMax M2.7 配置（推荐）**
 
-In `config.yaml`, set:
+⚠️ 必须同时在 docker-compose.yml 的环境变量和 config.yaml 中配置，缺一不可。
+
+**Step A: 更新 docker-compose.yml（添加环境变量）**
+
+在 hermes 服务的 `environment` 下添加：
+```yaml
+environment:
+  - TZ=Asia/Shanghai
+  - FEISHU_APP_ID=cli_xxxxxxxxxxxxx
+  - FEISHU_APP_SECRET=xxxxxxxxxxxxxxxx
+  - ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
+  - ANTHROPIC_AUTH_TOKEN=MINIMAX_API_KEY
+  - MINIMAX_API_KEY=sk-cp-你的API密钥
+```
+
+然后重启：
+```bash
+sudo -S bash -c "docker compose down && docker compose up -d"
+```
+
+**Step B: 更新 config.yaml**
+
 ```yaml
 model:
-  default: "MiniMax-M2.7"
+  provider: minimax
+  default: MiniMax-M2.7
+  base_url: https://api.minimaxi.com/v1
+  key: sk-cp-你的API密钥
+  reasoning: true
+  extra_body:
+    thinking: "on"
 
 inference:
-  provider: "openai"  # or "custom" for base_url override
-  base_url: "https://api.minimaxi.chat/v1"
-  api_key: "sk-cp-..."  # your API key
+  base_url: https://api.minimaxi.com/v1
+  api_key: sk-cp-你的API密钥
+
+gateway:
+  platform:
+    feishu:
+      enabled: true
+
+reasoning:
+  effort: high
+
+approvals:
+  mode: "off"
+
+FEISHU_HOME_CHANNEL: oc_xxxxxxxxxxxxx
 ```
 
-Also set in `.env`:
-```
-OPENAI_API_KEY=sk-cp-xxx
-```
-
-Then restart:
+重启使配置生效：
 ```bash
 sudo -S bash -c "docker compose restart hermes"
 ```
 
-**Option B: OpenRouter**
+**⚠️ 关键注意事项**
+
+- `ANTHROPIC_AUTH_TOKEN` 必须设为字面值 `MINIMAX_API_KEY`（不是你的实际 key），Hermes 会自动用 `MINIMAX_API_KEY` 环境变量的值替换
+- `base_url` 必须是 `https://api.minimaxi.com/v1`（不是 `/anthropic/v1`，那个是错误的）
+- 飞书 Bot 的 App ID 和 Secret 也需要在 docker-compose.yml 环境变量中配置
+- 飞书开发者后台需要订阅 `im.message.receive_v1` 事件，否则 Bot 收不到消息
+
+**OpenRouter 配置（备选）**
+
 ```yaml
+model:
+  provider: openrouter
+  default: anthropic/claude-opus-4.6
+  api_key: sk-or-你的OpenRouter密钥
+
 inference:
-  provider: "openrouter"
-  base_url: "https://openrouter.ai/api/v1"
-  api_key: "sk-or-..."  # your OpenRouter key
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  api_key: sk-or-你的OpenRouter密钥
 ```
 
 ### 7. Set Restart Policy

@@ -16,6 +16,11 @@ services:
       - ./hermes/data:/opt/data
     environment:
       - TZ=Asia/Shanghai
+      - FEISHU_APP_ID=cli_xxxxxxxxxxxxx
+      - FEISHU_APP_SECRET=xxxxxxxxxxxxxxxx
+      - ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
+      - ANTHROPIC_AUTH_TOKEN=MINIMAX_API_KEY
+      - MINIMAX_API_KEY=sk-cp-你的API密钥
     networks:
       - hermes-net
 
@@ -75,12 +80,30 @@ echo "Done. Agent source copied to ./hermes/hermes/"
 
 ```yaml
 model:
-  default: "MiniMax-M2.7"
+  provider: minimax
+  default: MiniMax-M2.7
+  base_url: https://api.minimaxi.com/v1
+  key: sk-cp-你的API密钥
+  reasoning: true
+  extra_body:
+    thinking: "on"
 
 inference:
-  provider: "openai"
-  base_url: "https://api.minimaxi.chat/v1"
-  api_key: "sk-cp-YOUR-KEY-HERE"
+  base_url: https://api.minimaxi.com/v1
+  api_key: sk-cp-你的API密钥
+
+gateway:
+  platform:
+    feishu:
+      enabled: true
+
+reasoning:
+  effort: high
+
+approvals:
+  mode: "off"
+
+FEISHU_HOME_CHANNEL: oc_xxxxxxxxxxxxx
 ```
 
 ## config.yaml - OpenRouter Example
@@ -114,3 +137,15 @@ Set restart policy:
 ```bash
 sudo -S bash -c "docker update --restart unless-stopped hermes hermes-dashboard hermes-webui"
 ```
+
+### Issue: "Unknown provider" or "Connection error" with MiniMax
+- `provider` 必须设为 `minimax`（不是 `openai`）
+- `ANTHROPIC_BASE_URL` 必须设为 `https://api.minimaxi.com/anthropic`（容器内环境变量）
+- `ANTHROPIC_AUTH_TOKEN` 必须设为字面值 `MINIMAX_API_KEY`
+- `base_url`（config.yaml）必须设为 `https://api.minimaxi.com/v1`（不是 `/anthropic/v1`）
+- 三个环境变量缺一不可：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN、MINIMAX_API_KEY
+
+### Issue: Bot doesn't respond to messages
+飞书开发者后台 → Hera App → 事件与回调 → 添加事件订阅：
+- `im.message.receive_v1`（收取消息）
+添加后需发布新版本 App 才能生效。
