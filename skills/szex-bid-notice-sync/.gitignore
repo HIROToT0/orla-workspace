@@ -1,0 +1,14 @@
+# 运行时生成，不要提交
+config/config.json
+config/session.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+*.log
+
+# OS
+.DS_Store

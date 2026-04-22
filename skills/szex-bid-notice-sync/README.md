@@ -2,123 +2,128 @@
 
 深圳交易集团招标公告抓取 + 飞书多维表格同步
 
-## 功能
+## 背景
 
-- ✅ 抓取深圳交易集团 API 招标公告
-- ✅ 按工程类型过滤（房建、市政、园林等）
-- ✅ 按时间范围筛选
-- ✅ 详情页解析（投标截止时间、招标估算、招标方式等）
-- ✅ 增量同步（自动跳过已同步记录）
-- ✅ 同步到飞书多维表格（Bitable）
-- ✅ 邮件通知（新公告触发）
-- ✅ 支持 `--dry-run` 测试模式
+每天监控深圳交易集团官网（https://www.szexgrp.com）招标公告，筛选检测类项目（检测/检验/监测/检查/巡查/排查/鉴定），同步到飞书多维表格。
 
-## 文件结构
+## 核心流程
 
 ```
-szex-bid-notice-sync/
-├── SKILL.md              # 技能说明
-├── README.md             # 本文件
-├── scripts/
-│   └── fetch_and_sync.py # 主脚本
-├── config/
-│   ├── config.json.example
-│   └── email.json.example
-└── references/
-    └── api-fields.md     # API字段说明
+深圳交易集团 API
+        ↓
+  Python 脚本（fetch_and_sync.py）
+        ↓
+  飞书多维表格（深圳交易集团招标公告信息）
+        ↓（可选）
+    邮件通知
 ```
+
+## 功能清单
+
+- ✅ 按关键词筛选（检测/检验/监测/检查/巡查/排查/鉴定）
+- ✅ 公告类型：招标公告（过滤掉变更/答疑/补遗等）
+- ✅ 工程类型：全部（不筛选）
+- ✅ 近 N 天数据抓取（默认3天）
+- ✅ 自动增量去重（基于 contentId）
+- ✅ 详情字段回填（投标截止时间/招标估算/招标方式/资格审查方式/递交方式/招标概况）
+- ✅ 飞书多维表格写入（14个字段）
+- ✅ 每日定时任务（crontab 07:00）
 
 ## 快速开始
 
-### 1. 复制配置文件
+### 1. 安装依赖
 
 ```bash
-cd ~/.openclaw/workspace/skills/szex-bid-notice-sync
-cp config/config.json.example config/config.json
-cp config/email.json.example config/email.json
+pip install httpx
 ```
 
-### 2. 编辑 config/config.json
+### 2. 配置飞书多维表格
 
-```json
-{
-  "app_token": "你的飞书多维表格 app_token",
-  "table_id": "你的飞书多维表格 table_id",
-  "feishu_token": "你的飞书 access_token"
-}
+已有配置：
+- app_token: `RG7lbqlijaY5WZs78QpcM6NjnZj`
+- table_id: `tblkYHpGG8V6IO2h`
+- 表格：深圳交易集团招标公告信息
+
+如需更换表格，在 `config/config.json` 中修改。
+
+### 3. 运行
+
+```bash
+# 首次运行抓取全量（近30天）
+python3 scripts/fetch_and_sync.py
+
+# 每日增量（近3天）
+python3 scripts/fetch_and_sync.py --days 3
+
+# 回填已有记录的详情字段
+python3 scripts/fetch_and_sync.py --backfill
+
+# 测试模式
+python3 scripts/fetch_and_sync.py --dry-run
 ```
 
-获取方式：
-- app_token: 飞书多维表格 URL 中 `/base/XXX` 的 XXX 部分
-- table_id: 多维表格 → 更多 → 设置 → table_id
-- feishu_token: 飞书开放平台 → 应用凭证 → tenant_access_token
+### 4. 定时任务
 
-### 3. 配置多维表格字段
+```bash
+# 编辑 crontab
+crontab -e
 
-在飞书多维表格中创建以下字段：
+# 添加行：
+0 7 * * * cd ~/.openclaw/workspace/skills/szex-bid-notice-sync/scripts && python3 fetch_and_sync.py --days 3 >> /tmp/szex-bid-notice-sync.log 2>&1
+```
+
+## 飞书多维表格字段
 
 | 字段名 | 类型 | 说明 |
 |--------|------|------|
 | 公告名称 | 文本 | 主字段 |
-| 公告链接 | 链接 | |
-| 公告类型 | 单选 | 招标公告/答疑/补遗 |
-| 工程类型 | 单选 | 施工/监理/勘察/其他 |
+| 公告链接 | 链接 | 指向 szexgrp.com 详情页 |
+| 公告类型 | 单选 | 招标公告 / 答疑、补遗 / 截标信息 |
+| 子类型 | 单选 | 同上 |
+| 工程类型 | 单选 | 施工 / 监理 / 勘察 / 设计 / 其他 等 |
 | 发布时间 | 日期 | |
-| 投标截止时间 | 日期 | |
+| 投标截止时间 | 日期 | 从详情 API 提取 |
+| 招标概况 | 文本 | 从详情 API 提取（前500字） |
+| 抓取时间 | 日期 | 脚本运行时间 |
+| 状态 | 单选 | （可自定义） |
 | 招标估算 | 数字 | 万元 |
-| 招标方式 | 单选 | 公开招标/邀请招标 |
-| 资格审查方式 | 单选 | 资格后审/资格预审 |
-| 递交方式 | 单选 | 线上/线下 |
-| 招标概况 | 文本 | |
-| 抓取时间 | 日期 | |
-| 状态 | 单选择 | 待跟进/已跟进 |
-
-### 4. 运行
-
-```bash
-# 默认抓取最近7天，"其他"类型的公告
-python3 scripts/fetch_and_sync.py
-
-# 指定类型
-python3 scripts/fetch_and_sync.py --types 施工,监理
-
-# 抓取所有类型
-python3 scripts/fetch_and_sync.py --all-types
-
-# 测试模式（不写入飞书）
-python3 scripts/fetch_and_sync.py --dry-run
-```
-
-### 5. 定时任务
-
-```bash
-# 每天早上9点执行
-openclaw cron add \
-  --name "深圳招标公告每日抓取" \
-  --schedule "0 9 * * *" \
-  --command "python3 ~/.openclaw/workspace/skills/szex-bid-notice-sync/scripts/fetch_and_sync.py"
-```
-
-或者手动加 crontab：
-```bash
-crontab -e
-# 添加行：
-0 9 * * * cd ~/.openclaw/workspace/skills/szex-bid-notice-sync && python3 scripts/fetch_and_sync.py >> /tmp/bid_sync.log 2>&1
-```
+| 招标方式 | 单选 | 公开招标 / 邀请招标 |
+| 资格审查方式 | 单选 | 资格后审 / 资格预审 |
+| 递交方式 | 单选 | 线上递交 / 线下递交 |
 
 ## 深圳交易集团 API
+
+### 列表 API
 
 ```
 POST https://www.szexgrp.com/cms/api/v1/trade/content/page
 ```
 
-参数：
-- `modelId`: 1378（建设工程）
-- `channelId`: 2851（建设工程）
-- `jygg_gglxmc_rank1`: 招标公告（筛选）
-- `jygg_gclx`: 工程类型（施工/监理/勘察/设计/可研/货物/物业/其他）
-- `releaseTimeBegin` / `releaseTimeEnd`: 日期范围
-- `page`: 页码，从0开始
-- `size`: 每页条数，最大50
+请求体：
+```json
+{
+  "modelId": 1378,
+  "channelId": 2851,
+  "fields": [{"fieldName": "jygg_gglxmc_rank1", "fieldValue": "招标公告"}],
+  "releaseTimeBegin": "2026-04-19",
+  "releaseTimeEnd": "2026-04-22",
+  "page": 0,
+  "size": 50
+}
+```
+
+### 详情 API
+
+```
+GET https://www.szexgrp.com/cms/api/v1/trade/content/detail?contentId=XXXXX
+```
+
+详情字段从 `txt` 字段的 HTML 中通过正则提取：
+- `投标文件递交截止时间` → 投标截止时间
+- `本次发包工程估价 X 万元` → 招标估算
+- `公开招标` / `邀请招标` → 招标方式
+- `资格后审` / `资格预审` → 资格审查方式
+- `线上递交` / `线下递交` → 递交方式
+- `本次招标内容` → 招标概况
 
 详见 `references/api-fields.md`
