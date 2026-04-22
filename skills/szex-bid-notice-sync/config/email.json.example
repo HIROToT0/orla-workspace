@@ -1,0 +1,8 @@
+{
+  "smtp_host": "smtp.qq.com",
+  "smtp_port": 465,
+  "smtp_user": "your_email@qq.com",
+  "smtp_pass": "your_smtp授权码",
+  "from_name": "招标监控",
+  "to": ["recipient@example.com"]
+}

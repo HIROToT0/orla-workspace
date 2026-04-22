@@ -1,0 +1,5 @@
+{
+  "app_token": "your_bitable_app_token",
+  "table_id": "tbl_your_table_id",
+  "feishu_token": "your_feishu_access_token"
+}
