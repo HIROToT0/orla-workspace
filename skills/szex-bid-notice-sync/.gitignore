@@ -1,14 +1,26 @@
-# 运行时生成，不要提交
+# 敏感配置文件
 config/config.json
-config/session.json
+config/email.json
+
+# 示例配置模板（可提交）
+!config/config.json.example
+!config/email.json.example
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
 
-# 日志
-*.log
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # OS
 .DS_Store
+Thumbs.db

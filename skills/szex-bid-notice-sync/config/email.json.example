@@ -1,8 +1,14 @@
 {
-  "smtp_host": "smtp.qq.com",
-  "smtp_port": 465,
-  "smtp_user": "your_email@qq.com",
-  "smtp_pass": "your_smtp授权码",
-  "from_name": "招标监控",
-  "to": ["recipient@example.com"]
+    "smtp_host": "smtp.exmail.qq.com",
+    "smtp_port": 465,
+    "smtp_user": "your@email.com",
+    "smtp_password": "YOUR_SMTP_PASSWORD",
+    "use_ssl": true,
+    "from_name": "深圳招标公告系统",
+    "to_addresses": ["recipient@example.com"],
+    "subject": "【招标公告】每日更新提醒",
+    "email_record_limit": 10,
+    "app_token": "YOUR_APP_TOKEN",
+    "table_id": "YOUR_TABLE_ID",
+    "keywords": ["检测", "监测", "鉴定", "排查", "巡查"]
 }
