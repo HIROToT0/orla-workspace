@@ -3,14 +3,22 @@
 """
 深圳交易集团招标公告抓取 + 飞书多维表格同步脚本
 功能：从深圳交易集团官网抓取招标公告，写入飞书多维表格
-依赖：Python 3.8+, requests, 飞书应用凭证
+依赖：Python 3.8+, 飞书应用凭证
 """
-
 import json, subprocess, re, time, sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent.parent / "config" / "config.json"
+MARKER_PATH = Path(__file__).parent.parent / "config" / ".last_keyword_new.txt"
+FETCH_TIME = Path(__file__).parent.parent / "config" / ".fetch_time.txt"
+
+# 每次运行先清空标记文件，防止残留旧数据导致误发邮件
+if MARKER_PATH.exists():
+    MARKER_PATH.unlink()
+if FETCH_TIME.exists():
+    FETCH_TIME.unlink()
+
 CHANNELS_FEISHU_PATH = Path.home() / ".openclaw" / "openclaw.json"
 
 # ======================== 飞书凭证获取 ========================
@@ -20,7 +28,6 @@ def get_feishu_creds():
     with open(config_path) as f:
         config = json.load(f)
     feishu_cfg = config.get("channels", {}).get("feishu", {})
-    # Try direct appId/appSecret first, then accounts.main path
     app_id = feishu_cfg.get("appId") or feishu_cfg.get("accounts", {}).get("main", {}).get("appId")
     app_secret = feishu_cfg.get("appSecret") or feishu_cfg.get("accounts", {}).get("main", {}).get("appSecret")
     return app_id, app_secret
@@ -56,7 +63,6 @@ def ensure_fields(token, app_token, table_id, fields_config):
     for fname, ftype in fields_config.items():
         if fname not in existing:
             payload = {"field_name": fname, "type": ftype}
-            # 单选类型需要 options
             if ftype == 3:
                 payload["property"] = {"options": []}
             bitable_api("POST", f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields", token, payload)
@@ -85,7 +91,7 @@ def fetch_list(params):
     ], capture_output=True, text=True)
     return json.loads(r.stdout)
 
-def fetch_detail(content_id, channel_id=2851):
+def fetch_detail(content_id, channel_id):
     """调用深圳交易集团详情 API"""
     r = subprocess.run([
         "curl", "-s",
@@ -107,9 +113,9 @@ def parse_datetime(dt_str):
     dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
     return int(dt.timestamp() * 1000)
 
-def extract_fields_from_detail(content_id):
+def extract_fields_from_detail(content_id, channel_id):
     """从详情 API + HTML 中提取各字段"""
-    data = fetch_detail(content_id)
+    data = fetch_detail(content_id, channel_id)
     if data.get("code") != 200:
         return {}
 
@@ -181,9 +187,9 @@ def main():
         cfg = {
             "app_token": "你的多维表格AppToken",
             "table_id": "你的数据表ID",
-            "days": 7,  # 抓取最近N天
-            "notice_types": ["招标公告"],  # 要抓取的公告类型
-            "project_types": ["其他"],  # 要抓取的工程类型
+            "days": 7,
+            "notice_types": ["招标公告"],
+            "project_types": ["其他"],
         }
         print(f"⚠️  未找到配置文件，使用默认配置。请创建 {CONFIG_PATH}")
         print(f"    复制 config/config.json.example 为 config/config.json 并填写实际值")
@@ -198,20 +204,20 @@ def main():
 
     # 确保表格有所需字段
     ensure_fields(token, app_token, table_id, {
-        "公告名称": 1,       # 文本
-        "公告链接": 15,      # 链接
-        "公告类型": 3,       # 单选
-        "子类型": 3,         # 单选
-        "工程类型": 3,       # 单选
-        "发布时间": 5,       # 日期
-        "投标截止时间": 5,   # 日期
-        "招标概况": 1,       # 文本
-        "抓取时间": 5,       # 日期
-        "状态": 3,           # 单选
-        "招标估算": 2,       # 数字
-        "招标方式": 3,        # 单选
-        "资格审查方式": 3,    # 单选
-        "递交方式": 3,        # 单选
+        "公告名称": 1,
+        "公告链接": 15,
+        "公告类型": 3,
+        "子类型": 3,
+        "工程类型": 3,
+        "发布时间": 5,
+        "投标截止时间": 5,
+        "招标概况": 1,
+        "抓取时间": 5,
+        "状态": 3,
+        "招标估算": 2,
+        "招标方式": 3,
+        "资格审查方式": 3,
+        "递交方式": 3,
     })
 
     # 计算时间范围
@@ -229,16 +235,16 @@ def main():
         if name:
             existing_ids.add(name)
 
-    # 抓取列表
-    print(f"\n📡 开始抓取: {begin_date} ~ {end_date}")
-    print(f"   工程类型: {project_types}")
+    token = get_tenant_token(app_id, app_secret)
 
-    list_params = {
+    # =========================================================================
+    # 数据源一：建设工程（channelId=2851，原有逻辑）
+    # =========================================================================
+    list_params_2851 = {
         "modelId": 1378,
         "channelId": 2851,
         "fields": [
-            {"fieldName": "jygg_gglx", "fieldValue": "招标公告"},
-            {"fieldName": "jygg_gclx", "fieldValue": "其他"},
+            {"fieldName": "jygg_gglxmc_rank1", "fieldValue": "招标公告"},
         ],
         "releaseTimeBegin": begin_date,
         "releaseTimeEnd": end_date,
@@ -246,56 +252,120 @@ def main():
         "size": 50
     }
 
-    list_data = fetch_list(list_params)
-    all_items = list_data.get("data", {}).get("content", [])
-    total = list_data.get("data", {}).get("totalElements", 0)
-    print(f"   API返回总数: {total}，本次获取: {len(all_items)}")
+    print(f"\n📡 数据源一【建设工程】：{begin_date} ~ {end_date}")
+    print(f"   工程类型: {project_types}")
+
+    list_data_2851 = fetch_list(list_params_2851)
+    all_items_2851 = list_data_2851.get("data", {}).get("content", [])
+    total_2851 = list_data_2851.get("data", {}).get("totalElements", 0)
+    print(f"   API返回总数: {total_2851}，本次获取: {len(all_items_2851)}")
 
     # 按工程类型过滤
     if project_types:
-        all_items = [i for i in all_items if i.get("projectType") in project_types]
-        print(f"   工程类型过滤后: {len(all_items)} 条")
+        all_items_2851 = [i for i in all_items_2851 if i.get("projectType") in project_types]
+        print(f"   工程类型过滤后: {len(all_items_2851)} 条")
 
-    # 关键词过滤
-    keyword_new_items = [i for i in all_items if i.get("title") not in existing_ids and any(kw in i.get("title", "") for kw in keywords)]
-    print(f"   关键词过滤后: {len(keyword_new_items)} 条")
+    # 关键词标题集合
+    keyword_titles_2851 = {i["title"] for i in all_items_2851 if i.get("title") and any(kw in i.get("title", "") for kw in keywords)}
+    new_items_2851 = [i for i in all_items_2851 if i.get("title") not in existing_ids]
+    keyword_new_items_2851 = [i for i in all_items_2851 if i.get("title") not in existing_ids and i.get("title") in keyword_titles_2851]
+    print(f"   关键词过滤后: {len(keyword_new_items_2851)} 条")
+    print(f"   去重后新增: {len(new_items_2851)} 条")
 
-    # 去重已存在的
-    new_items = [i for i in all_items if i.get("title") not in existing_ids]
-    print(f"   新增记录: {len(new_items)} 条")
+    # =========================================================================
+    # 数据源二：阳光采购（channelId=4161，新增）
+    # 筛选条件：采购方式=公开招标，项目类型=工程
+    # =========================================================================
+    list_params_4161 = {
+        "modelId": 1378,
+        "channelId": 4161,
+        "siteId": 216,
+        "fields": [
+            {"fieldName": "jygg_gglxmc", "fieldValue": "采购公告"},
+            {"fieldName": "jygg_cglx", "fieldValue": "工程"},
+            {"fieldName": "jygg_cgfs", "fieldValue": "公开招标"},
+        ],
+        "releaseTimeBegin": begin_date,
+        "releaseTimeEnd": end_date,
+        "page": 0,
+        "size": 50
+    }
 
-    if not new_items:
+    print(f"\n📡 数据源二【阳光采购】：{begin_date} ~ {end_date}")
+    print(f"   采购方式: 公开招标 | 项目类型: 工程")
+
+    list_data_4161 = fetch_list(list_params_4161)
+    all_items_4161 = list_data_4161.get("data", {}).get("content", [])
+    total_4161 = list_data_4161.get("data", {}).get("totalElements", 0)
+    print(f"   API返回总数: {total_4161}，本次获取: {len(all_items_4161)}")
+
+    keyword_titles_4161 = {i["title"] for i in all_items_4161 if i.get("title") and any(kw in i.get("title", "") for kw in keywords)}
+    new_items_4161 = [i for i in all_items_4161 if i.get("title") not in existing_ids]
+    keyword_new_items_4161 = [i for i in all_items_4161 if i.get("title") not in existing_ids and i.get("title") in keyword_titles_4161]
+    print(f"   关键词过滤后: {len(keyword_new_items_4161)} 条")
+    print(f"   去重后新增: {len(new_items_4161)} 条")
+
+    # =========================================================================
+    # 合并两个数据源，仅保留匹配关键词的记录
+    # =========================================================================
+    all_new_items = new_items_2851 + new_items_4161
+    all_keyword_titles = keyword_titles_2851 | keyword_titles_4161
+
+    # 只写入匹配关键词的记录
+    keyword_new_items = [i for i in all_new_items if i.get("title") in all_keyword_titles]
+
+    if not keyword_new_items:
         print("\n✅ 没有新增记录，任务结束")
         return
 
-    # 记录本次新增中匹配关键词的标题（供邮件脚本使用）
-    keyword_new_titles = set(i["title"] for i in new_items if any(kw in i.get("title", "") for kw in keywords))
-    MARKER_PATH = Path(__file__).parent.parent / "config" / ".last_keyword_new.txt"
-    MARKER_PATH.write_text("\n".join(keyword_new_titles)) if keyword_new_titles else MARKER_PATH.write_text("")
+    # 记录本次新增中匹配关键词的记录（供邮件脚本使用）
+    keyword_new_records = []
+    for i in keyword_new_items:
+        channel_id = i.get("channelId", 2851)
+        if channel_id == 4161:
+            detail_url = f"https://www.szexgrp.com/jyfw/details.html?contentId={i['id']}&channelId={channel_id}&crumb=ygcg"
+        else:
+            detail_url = f"https://www.szexgrp.com/jyfw/details.html?contentId={i['id']}&channelId={channel_id}&crumb=jsgc"
+        keyword_new_records.append({
+            "title": i.get("title", ""),
+            "notice_type": i.get("noticeTypeName", "招标公告"),
+            "url": detail_url,
+            "publish_time": i.get("publishTime", "") or i.get("releaseTime", ""),
+        })
+
+    if keyword_new_records:
+        MARKER_PATH.write_text(json.dumps(keyword_new_records, ensure_ascii=False), encoding="utf-8")
+        FETCH_TIME.write_text(datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"))
+    else:
+        MARKER_PATH.write_text("[]", encoding="utf-8")
+        if FETCH_TIME.exists():
+            FETCH_TIME.unlink()
 
     # 逐条抓详情并写入
     now_ts = int(datetime.now(timezone(timedelta(hours=8))).timestamp() * 1000)
     success_count = 0
 
-    for item in new_items:
+    for item in keyword_new_items:
         cid = item["id"]
         title = item.get("title", "")
         notice_type = item.get("noticeTypeName", "招标公告")
-        project_region = item.get("projectRegion", "")
-        trade_type = item.get("tradeType", "")
+        channel_id = item.get("channelId", 2851)
         print(f"\n  [{cid}] {title[:50]}")
 
+        # 确定详情链接格式
+        if channel_id == 4161:
+            detail_url = f"https://www.szexgrp.com/jyfw/details.html?contentId={cid}&channelId={channel_id}&crumb=ygcg"
+        else:
+            detail_url = f"https://www.szexgrp.com/jyfw/details.html?contentId={cid}&channelId={channel_id}&crumb=jsgc"
+
         # 提取详情字段
-        detail_fields = extract_fields_from_detail(cid)
+        detail_fields = extract_fields_from_detail(cid, channel_id)
         detail_fields["公告名称"] = title
         detail_fields["公告类型"] = notice_type
         detail_fields["子类型"] = item.get("rank1NoticeTypeName", notice_type)
         detail_fields["工程类型"] = item.get("projectType", "")
         detail_fields["抓取时间"] = now_ts
         detail_fields["状态"] = ""
-
-        # 公告链接（统一用 details.html 格式）
-        detail_url = f"https://www.szexgrp.com/jyfw/details.html?contentId={cid}&channelId=2851&crumb=jsgc"
         detail_fields["公告链接"] = {"link": detail_url, "text": "查看公告"}
 
         # 写入飞书
@@ -312,9 +382,9 @@ def main():
         time.sleep(0.5)
 
     print(f"\n{'='*50}")
-    print(f"✅ 完成！新增 {success_count}/{len(new_items)} 条记录")
-    if keyword_new_items:
-        print(f"   含关键词新增: {len(keyword_new_items)} 条（将发送邮件通知）")
+    print(f"✅ 完成！新增 {success_count}/{len(all_new_items)} 条记录")
+    if keyword_new_records:
+        print(f"   含关键词新增: {len(keyword_new_records)} 条（将发送邮件通知）")
     return success_count
 
 if __name__ == "__main__":

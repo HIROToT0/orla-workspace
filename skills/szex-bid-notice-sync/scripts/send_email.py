@@ -1,225 +1,179 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-飞书多维表格新增记录邮件通知脚本
-功能：读取飞书多维表格最新N条记录，生成 HTML 邮件并发送
-依赖：Python 3.8+, smtplib（内置）
+发送招标公告更新邮件
+依赖: Python 3.8+, smtplib (标准库)
 """
-
-import json, subprocess, sys, smtplib
-from email.mime.text import MIMEText
+import json, smtplib, ssl, sys
 from email.mime.multipart import MIMEMultipart
-from email.header import Header
-from datetime import datetime, timezone, timedelta
+from email.mime.text import MIMEText
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent.parent / "config" / "email.json"
+EMAIL_CFG = Path(__file__).parent.parent / "config" / "email.json"
+LAST_NEW = Path(__file__).parent.parent / "config" / ".last_keyword_new.txt"
+TABLE_URL = "https://ccnlg9zq6b6x.feishu.cn/base/RG7lbqlijaY5WZs78QpcM6NjnZj?table=tblkYHpGG8V6IO2h&view=vewVmCznTB"
+FETCH_TIME = Path(__file__).parent.parent / "config" / ".fetch_time.txt"
 
-def get_feishu_creds():
-    config_path = Path.home() / ".openclaw" / "openclaw.json"
-    with open(config_path) as f:
-        config = json.load(f)
-    feishu_cfg = config.get("channels", {}).get("feishu", {})
-    app_id = feishu_cfg.get("appId") or feishu_cfg.get("accounts", {}).get("main", {}).get("appId")
-    app_secret = feishu_cfg.get("appSecret") or feishu_cfg.get("accounts", {}).get("main", {}).get("appSecret")
-    return app_id, app_secret
 
-def get_tenant_token(app_id, app_secret):
-    r = subprocess.run([
-        "curl", "-s", "-X", "POST",
-        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-        "-H", "Content-Type: application/json",
-        "-d", json.dumps({"app_id": app_id, "app_secret": app_secret})
-    ], capture_output=True, text=True)
-    return json.loads(r.stdout)["tenant_access_token"]
+def load_cfg():
+    with open(EMAIL_CFG) as f:
+        return json.load(f)
 
-def ms_to_date(ms):
-    """毫秒时间戳 -> 'yyyy/MM/dd' 格式"""
-    if not ms:
-        return "—"
-    from datetime import datetime, timezone, timedelta
-    dt = datetime.fromtimestamp(ms / 1000, tz=timezone(timedelta(hours=8)))
-    return dt.strftime("%Y/%m/%d")
 
-def bitable_api(method, path, token, data=None):
-    cmd = [
-        "curl", "-s", "-X", method,
-        f"https://open.feishu.cn/open-apis{path}",
-        "-H", f"Authorization: Bearer {token}",
-        "-H", "Content-Type: application/json"
-    ]
-    if data:
-        cmd += ["-d", json.dumps(data)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    return json.loads(r.stdout)
-
-def fetch_recent_records(app_token, table_id, token, limit=10):
-    """获取最近N条记录（按抓取时间倒序）"""
-    result = bitable_api("GET",
-        f"/bitable/v1/apps/{app_token}/tables/{table_id}/records?page_size={limit}",
-        token)
-    items = result.get("data", {}).get("items", [])
-    # 按抓取时间倒序
-    items.sort(key=lambda x: x.get("fields", {}).get("抓取时间") or 0, reverse=True)
-    return items[:limit]
-
-BITABLE_URL = "https://ccnlg9zq6b6x.feishu.cn/base/RG7lbqlijaY5WZs78QpcM6NjnZj?table=tblkYHpGG8V6IO2h&view=vewVmCznTB"
-
-def build_html_email(records):
-    """构建 HTML 邮件内容"""
-    now = datetime.now(timezone(timedelta(hours=8))).strftime("%Y年%m月%d日 %H:%M")
-
-    rows = ""
-    for i, rec in enumerate(records, 1):
-        f = rec.get("fields", {})
-        name = f.get("公告名称", "—")
-        ntype = f.get("公告类型", "—")
-        ptype = f.get("工程类型", "—")
-        pub_time = ms_to_date(f.get("发布时间"))
-        deadline = ms_to_date(f.get("投标截止时间"))
-        region = f.get("项目区域", f.get("公告地区", "—"))
-        link_data = f.get("公告链接", {})
-        link_url = link_data.get("link", "#") if isinstance(link_data, dict) else "#"
-
-        rows += f"""
-        <tr style="background: {'#f9f9f9' if i % 2 == 0 else '#ffffff'}">
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center">{i}</td>
-            <td style="padding:8px 12px;border:1px solid #ddd">
-                <a href="{link_url}" style="color:#2161dc;text-decoration:none" target="_blank">{name[:40]}{'...' if len(name)>40 else ''}</a>
-            </td>
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center">{ntype}</td>
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center">{ptype}</td>
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center">{region}</td>
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center">{pub_time}</td>
-            <td style="padding:8px 12px;border:1px solid #ddd;text-align:center;color:{'#e55' if deadline and deadline!='—' else '#333'}">{deadline}</td>
-        </tr>"""
-
-    html = f"""
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<style>
-body{{ font-family: Arial, "Microsoft YaHei", sans-serif; margin: 20px; color: #333; }}
-h2{{ color: #2161dc; border-bottom: 2px solid #2161dc; padding-bottom: 8px; }}
-table{{ border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 14px; }}
-th{{ background: #2161dc; color: #fff; padding: 10px 12px; border: 1px solid #1a4db8; text-align: center; }}
-td{{ vertical-align: top; }}
-.footer{{ margin-top: 20px; font-size: 12px; color: #888; }}
-.highlight{{ color: #e55; font-weight: bold; }}
-</style>
-</head>
-<body>
-<h2>📢 深圳交易集团招标公告更新通知</h2>
-<p>抓取时间：{now} &nbsp;|&nbsp; 共 <strong>{len(records)}</strong> 条记录</p>
-
-<table>
-<tr>
-    <th style="width:5%">#</th>
-    <th style="width:35%">公告名称</th>
-    <th style="width:10%">公告类型</th>
-    <th style="width:8%">工程类型</th>
-    <th style="width:8%">区域</th>
-    <th style="width:12%">发布时间</th>
-    <th style="width:12%">投标截止</th>
-</tr>
-{rows}
-</table>
-
-<div class="footer">
-<p>📋 <a href="{BITABLE_URL}" target="_blank" style="color:#2161dc">点击此处查看完整表格 → 深圳交易集团招标公告信息</a></p>
-<p>本邮件由 <strong>OpenClaw + 深圳交易集团招标公告抓取系统</strong> 自动发送</p>
-<p>⚠️ 投标截止时间标红表示距今不足7天，请及时关注！</p>
-</div>
-</body>
-</html>"""
-    return html
-
-def load_email_config():
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
-    # 默认配置
-    return {
-        "smtp_host": "smtp.example.com",
-        "smtp_port": 465,
-        "smtp_user": "your@email.com",
-        "smtp_password": "your_password",
-        "use_ssl": True,
-        "from_name": "OpenClaw招标公告系统",
-        "to_addresses": ["recipient@example.com"],
-        "subject": "【招标公告】每日更新提醒"
-    }
-
-def send_email(html_content, cfg):
-    """发送邮件"""
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header(cfg.get("subject", "【招标公告】每日更新提醒"), "utf-8")
-    msg["From"] = f"{cfg.get('from_name', 'OpenClaw')} <{cfg.get('smtp_user')}>"
-    msg["To"] = ", ".join(cfg.get("to_addresses", []))
-
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-
-    smtp_cfg = cfg
+def load_records():
+    """加载含关键词的新增记录（JSON格式，含标题、类型、链接等）"""
+    if not LAST_NEW.exists():
+        return []
     try:
-        if smtp_cfg.get("use_ssl", True):
-            server = smtplib.SMTP_SSL(smtp_cfg["smtp_host"], smtp_cfg["smtp_port"])
-        else:
-            server = smtplib.SMTP(smtp_cfg["smtp_host"], smtp_cfg["smtp_port"])
+        content = LAST_NEW.read_text(encoding="utf-8").strip()
+        # 文件存在但内容为空或为[]，都视为无数据
+        if not content or content == "[]":
+            return []
+        return json.loads(content)
+    except (json.JSONDecodeError, IOError):
+        return []
 
-        if not smtp_cfg.get("use_ssl"):
-            server.starttls()
 
-        server.login(smtp_cfg["smtp_user"], smtp_cfg["smtp_password"])
-        server.sendmail(smtp_cfg["smtp_user"], smtp_cfg["to_addresses"], msg.as_string())
-        server.quit()
-        print("✅ 邮件发送成功")
-        return True
-    except Exception as e:
-        print(f"❌ 邮件发送失败: {e}")
-        return False
-
-def main():
-    app_id, app_secret = get_feishu_creds()
-    if not app_id or not app_secret:
-        print("❌ 未找到飞书凭证")
-        return
-
-    # 读取配置
-    cfg = load_email_config()
-    app_token = cfg.get("app_token") or exit_config_error("app_token")
-    table_id = cfg.get("table_id") or exit_config_error("table_id")
-    keywords = cfg.get("keywords", ["检测", "监测", "鉴定", "排查", "巡查"])
-
-    # 读取上次抓取中匹配关键词的记录标题
-    MARKER_PATH = Path(__file__).parent.parent / "config" / ".last_keyword_new.txt"
-    keyword_titles = set()
-    if MARKER_PATH.exists():
-        content = MARKER_PATH.read_text().strip()
-        if content:
-            keyword_titles = set(content.split("\n"))
-
-    if not keyword_titles:
-        print("⚠️ 没有新增的关键词匹配记录，跳过邮件发送")
-        return
-
-    token = get_tenant_token(app_id, app_secret)
-
-    # 获取全部已有记录（最多500条），过滤出匹配标题的
-    result = bitable_api("GET",
-        f"/bitable/v1/apps/{app_token}/tables/{table_id}/records?page_size=500",
-        token)
-    all_items = result.get("data", {}).get("items", [])
-
-    # 过滤出本次新增且匹配关键词的记录
-    records = [r for r in all_items if r.get("fields", {}).get("公告名称", "") in keyword_titles]
-
+def build_html_table(records, fetch_time=""):
+    """构建HTML表格"""
     if not records:
-        print("⚠️ 没有匹配关键词的记录，跳过邮件发送")
+        return ""
+
+    rows = []
+    for idx, rec in enumerate(records, 1):
+        title = rec.get("title", "")
+        notice_type = rec.get("notice_type", "")
+        url = rec.get("url", "")
+        publish_time = rec.get("publish_time", "")
+
+        # 处理发布时间格式
+        if publish_time and len(str(publish_time)) >= 10:
+            try:
+                dt = datetime.strptime(str(publish_time)[:10], "%Y-%m-%d")
+                publish_time = dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+
+        rows.append(f"""
+        <tr style="background-color: {'#f5f5f5' if idx % 2 == 0 else '#ffffff'};">
+            <td style="padding:10px; border:1px solid #ddd; text-align:center;">{idx}</td>
+            <td style="padding:10px; border:1px solid #ddd;">
+                <a href="{url}" style="color:#1a73e8; text-decoration:none; word-break:break-all;">{title}</a>
+            </td>
+            <td style="padding:10px; border:1px solid #ddd; text-align:center; white-space:nowrap;">{notice_type}</td>
+            <td style="padding:10px; border:1px solid #ddd; text-align:center; white-space:nowrap;">{publish_time}</td>
+        </tr>
+        """)
+
+    table_html = f"""
+    <div style="margin:20px 0;">
+        <p style="font-size:14px; color:#666;">抓取时间：{fetch_time} &nbsp;|&nbsp; 共 <strong>{len(records)}</strong> 条新增公告</p>
+        <table style="width:100%; border-collapse:collapse; font-size:14px; font-family:Microsoft YaHei, Arial, sans-serif;">
+            <thead>
+                <tr style="background-color:#2c5aa0; color:#ffffff;">
+                    <th style="padding:12px 10px; border:1px solid #ddd; text-align:center; width:40px;">序号</th>
+                    <th style="padding:12px 10px; border:1px solid #ddd; text-align:left;">公告名称</th>
+                    <th style="padding:12px 10px; border:1px solid #ddd; text-align:center; width:120px;">公告类型</th>
+                    <th style="padding:12px 10px; border:1px solid #ddd; text-align:center; width:100px;">发布时间</th>
+                </tr>
+            </thead>
+            <tbody>
+                {"".join(rows)}
+            </tbody>
+        </table>
+    </div>
+    """
+    return table_html
+
+
+def build_plain_table(records):
+    """构建纯文本表格（作为plain版本fallback）"""
+    if not records:
+        return ""
+    lines = ["📋 本次新增招标公告：", ""]
+    header = f"{'序号':<6} {'公告名称':<60} {'类型':<15} {'发布时间':<12}"
+    lines.append(header)
+    lines.append("-" * 100)
+    for idx, rec in enumerate(records, 1):
+        title = rec.get("title", "")[:58]
+        notice_type = rec.get("notice_type", "")[:13]
+        publish_time = rec.get("publish_time", "")[:10]
+        if len(str(publish_time)) >= 10:
+            try:
+                dt = datetime.strptime(str(publish_time)[:10], "%Y-%m-%d")
+                publish_time = dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        lines.append(f"{idx:<6} {title:<60} {notice_type:<15} {publish_time:<12}")
+    return "\n".join(lines)
+
+
+def send_email(records):
+    cfg = load_cfg()
+    if not records:
+        print("无新增记录，跳过发送邮件")
         return
 
-    html = build_html_email(records)
-    send_email(html, cfg)
+    # 获取抓取时间
+    fetch_time = ""
+    if FETCH_TIME.exists():
+        fetch_time = FETCH_TIME.read_text().strip()
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"{cfg['subject_prefix']}新增 {len(records)} 条公告"
+    msg["From"] = f"{cfg['from_name']} <{cfg['from_addr']}>"
+    msg["To"] = ", ".join(cfg["to_addrs"])
+
+    # Plain文本版本
+    plain_body = build_plain_table(records)
+    plain_body += f"\n\n🔗 表格链接：{TABLE_URL}"
+    text_part = MIMEText(plain_body, "plain", "utf-8")
+
+    # HTML版本
+    table_html = build_html_table(records, fetch_time)
+    html_body = f"""
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: Microsoft YaHei, Arial, sans-serif; color: #333; }}
+        </style>
+    </head>
+    <body>
+        <h2 style="color:#2c5aa0; margin-bottom:5px;">📋 深圳交易集团招标公告更新</h2>
+        <p style="color:#666; font-size:13px;">
+            以下为本次新增的招标公告，请及时查看。
+        </p>
+        {table_html}
+        <p style="margin-top:20px;">
+            <a href="{TABLE_URL}" style="display:inline-block; padding:10px 20px; background-color:#2c5aa0; color:#ffffff; text-decoration:none; border-radius:4px; font-size:14px;">
+                🔗 点击查看完整表格
+            </a>
+        </p>
+        <hr style="border:none; border-top:1px solid #eee; margin:20px 0;">
+        <p style="color:#999; font-size:12px;">本邮件由系统自动发送，请勿直接回复。</p>
+    </body>
+    </html>
+    """
+    html_part = MIMEText(html_body, "html", "utf-8")
+
+    msg.attach(text_part)
+    msg.attach(html_part)
+
+    if cfg.get("use_ssl", True):
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL(cfg["smtp_host"], cfg["smtp_port"], context=ctx) as server:
+            server.login(cfg["from_addr"], cfg.get("password", ""))
+            server.sendmail(cfg["from_addr"], cfg["to_addrs"], msg.as_string())
+    else:
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"]) as server:
+            server.starttls()
+            server.login(cfg["from_addr"], cfg.get("password", ""))
+            server.sendmail(cfg["from_addr"], cfg["to_addrs"], msg.as_string())
+
+    print(f"✅ 邮件已发送至 {', '.join(cfg['to_addrs'])}，共 {len(records)} 条记录")
+
 
 if __name__ == "__main__":
-    main()
+    records = load_records()
+    send_email(records)
